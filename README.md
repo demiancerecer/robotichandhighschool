@@ -9,3 +9,9 @@ Demian
 
 
 requirements:
+
+OpenCV: pip install opencv-python
+
+MediaPipe: pip install mediapipe
+
+PySerial: pip install pyserial
