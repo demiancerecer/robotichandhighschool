@@ -3,28 +3,43 @@ import mediapipe as mp
 import serial
 import time
 import math
+import glob
+import sys
 
-# --- CONFIGURACIÓN DEL ARDUINO ---
-puerto_arduino = 'COM3' 
+# --- CONFIGURACIÓN DEL ARDUINO (AUTODETECTAR EN MACOS) ---
+def buscar_puerto_arduino():
+    # Busca puertos que sigan el patrón típico de macOS
+    puertos = glob.glob('/dev/cu.usbmodem*') + glob.glob('/dev/cu.usbserial*')
+    if puertos:
+        return puertos[0]
+    return None
+
+puerto_arduino = buscar_puerto_arduino() or '/dev/cu.usbmodem14101' # Cambia si conoces el tuyo
 
 try:
+    # Ajustamos el puerto para macOS
     arduino = serial.Serial(puerto_arduino, 9600, timeout=1)
-    print("Conectado al Arduino exitosamente.")
+    print(f"Conectado exitosamente a: {puerto_arduino}")
     time.sleep(2) 
     
-    # Mandamos todo a 0 (Mano Abierta) al arrancar para calibrar
-    print("Forzando posición inicial: MANO ABIERTA (0 grados para todos)...")
+    print("Forzando posición inicial: MANO ABIERTA...")
     arduino.write("0,0,0,0,0\n".encode())
-    time.sleep(3) 
+    time.sleep(2) 
     
 except Exception as e:
     print(f"Error al conectar con Arduino: {e}")
-    print("El programa funcionará en pantalla, pero no mandará señal a motores.")
+    print("El programa funcionará en pantalla, pero NO mandará señal a motores.")
     arduino = None
 
 # --- CONFIGURACIÓN DE MEDIAPIPE ---
 mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.7, min_tracking_confidence=0.7)
+# Si tienes una Mac con chip M1/M2/M3, este bloque es crítico
+hands = mp_hands.Hands(
+    static_image_mode=False,
+    max_num_hands=1, 
+    min_detection_confidence=0.7, 
+    min_tracking_confidence=0.7
+)
 mp_draw = mp.solutions.drawing_utils
 
 def calcular_distancia(p1, p2):
@@ -39,18 +54,14 @@ def mapear(valor, in_min, in_max, out_min, out_max):
 
 def escalonar_angulo(angulo_calculado, tipo_dedo):
     if tipo_dedo == 'pulgar':
-        # ¡NUEVO: Solo 2 etapas y menos giro!
-        if angulo_calculado < 90: 
-            return 0    # Etapa 1: Totalmente abierto
-        else: 
-            return 90   # Etapa 2: Cerrado (Pero solo a la mitad del giro para que no jale tanto)
+        if angulo_calculado < 90: return 0    
+        else: return 90   
             
     elif tipo_dedo == 'menique':
         if angulo_calculado < 90: return 0
         else: return 180
             
     else:
-        # Los demás dedos siguen teniendo sus etapas normales
         if angulo_calculado < 30: return 0
         elif angulo_calculado < 90: return 60
         elif angulo_calculado < 150: return 120
@@ -62,11 +73,16 @@ cap = cv2.VideoCapture(0)
 puntas = [4, 8, 12, 16, 20]
 bases = [2, 5, 9, 13, 17]
 
-while True:
+print("Presiona 'q' para salir...")
+
+while cap.isOpened():
     success, img = cap.read()
     if not success:
+        print("No se pudo acceder a la cámara.")
         break
 
+    # Voltear la imagen para que actúe como un espejo
+    img = cv2.flip(img, 1)
     imgRGB = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     results = hands.process(imgRGB)
 
@@ -76,7 +92,6 @@ while True:
 
             lista_angulos = []
             muneca = hand_landmarks.landmark[0]
-            
             base_medio = hand_landmarks.landmark[9]
             tamano_mano = calcular_distancia(muneca, base_medio)
 
@@ -114,13 +129,18 @@ while True:
             mensaje = f"{lista_angulos[0]},{lista_angulos[1]},{lista_angulos[2]},{lista_angulos[3]},{lista_angulos[4]}\n"
             
             if arduino:
-                arduino.write(mensaje.encode())
+                try:
+                    arduino.write(mensaje.encode())
+                except:
+                    print("Se perdió la conexión con el Arduino.")
+                    arduino = None
             
-            cv2.putText(img, f"Enviando: {mensaje.strip()}", (10, 50), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 0), 2)
-            time.sleep(0.05) 
+            cv2.putText(img, f"Enviando: {mensaje.strip()}", (10, 50), 
+                        cv2.FONT_HERSHEY_PLAIN, 1.5, (0, 255, 0), 2)
 
-    cv2.imshow("Camara", img)
+    cv2.imshow("Mano Robotica MacOS", img)
     
+    # Pausa pequeña para no saturar el procesador
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
